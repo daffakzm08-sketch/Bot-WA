@@ -3,6 +3,7 @@ import { makeWASocket, useMultiFileAuthState } from "@whiskeysockets/baileys"
 import pino from "pino"
 import chalk from "chalk"
 import readline from "readline"
+import { handleMessage } from "./handler.js"
 
 // Metode Pairing
 // True = Pairing Code || False = Scan QR
@@ -48,6 +49,13 @@ async function connectToWhatsApp(){
 
    // menyimpan sesi Login
    lenwy.ev.on("creds.update", saveCreds)
+
+   // Menangani pesan masuk (command & auto-reply)
+   lenwy.ev.on("messages.upsert", async (m) => {
+      const msg = m.messages[0]
+      if (!msg) return
+      await handleMessage(lenwy, msg)
+   })
 
    // Informasi koneksi
    lenwy.ev.on("connection.update", (update) => {
