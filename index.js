@@ -1,70 +1,43 @@
-// Import Module
+//import Module
 const { makeWASocket, useMultiFileAuthState } = require("@whiskeysockets/baileys")
 const pino = require("pino")
 const chalk = require("chalk")
 const readline = require("readline")
+const { resolve } = require("path")
+const { version } = require("os")
 
 // Metode Pairing
-// true = Pairing Code || false = Scan QR
+// True = Pairing Code || False = Scan QR
 const usePairingCode = true
 
-// Prompt Input Terminal
-async function question(prompt) {
-   process.stdout.write(prompt)
-   const rl = readline.createInterface({
+// promt Input Terminal
+async function question(promt) {
+   process.stdout.write(promt)
+   const r1 = readline.createInterface({
       input: process.stdin,
       output: process.stdout,
    })
-   return new Promise((resolve) => rl.question("", (ans) => {
-      rl.close()
+
+   return new Promise((resolve) => r1.question("", (ans) => {
+      r1.close()
       resolve(ans)
    }))
 }
 
-// Koneksi WhatsApp
+// Koneksi Whatsapp
 async function connectToWhatsApp(){
-   console.log(chalk.blue("😆 Memulai koneksi ke WhatsApp"))
+   console.log(chalk.blue("😆  Memulai koneksi ke wahtsapp"))
 
-   // Menyimpan Sesi Login
+   // Meyimpan Sesi Login
+   // LenwySesi Menjadi Pyeimpanan Sesi Login
    const { state, saveCreds } = await useMultiFileAuthState("./LenwySesi")
 
-   // Membuat koneksi WhatsApp
-   const sock = makeWASocket({
-      logger: pino({ level: "silent"}),
-      printQRInTerminal: !usePairingCode,
-      auth: state,
-      browser: ["Ubuntu", "Chrome", "20.0.04"]
-   })
-
-   // Metode Pairing Code
-   if (usePairingCode && !sock.authState.creds.registered) {
-      console.log(chalk.green("☺️ Masukkan nomor dengan awalan 62"))
-      const phoneNumber = await question(">")
-      const code = await sock.requestPairingCode(phoneNumber.trim())
-      console.log(chalk.cyan(`😇 Pairing code: ${code}`))
-   }
-
-   // Menyimpan sesi login
-   sock.ev.on("creds.update", saveCreds)
-
-   // Informasi koneksi
-   sock.ev.on("connection.update", (update) => {
-      const { connection } = update
-      if (connection === "close") {
-         console.log(chalk.red("❌ Koneksi terputus, mencoba menyambung ulang..."))
-         connectToWhatsApp()
-      } else if (connection === "open") {
-         console.log(chalk.green("✔️ Berhasil terhubung ke WhatsApp"))
-      }
-   })
-}
-
-// Jalankan koneksi WhatsApp
-connectToWhatsApp()
+   // Membuat koneksi wahtsapp
+   const lenwy = makeWASocket({
       logger: pino({ level: "silent"}),
       printQRInTerminal: !usePairingCode,
       auth: state, // pakai sesi yang ada
-      browser: ["Ubuntu", "Chrome", "20.0.04"], // simulasi br
+      browser: ["Ubuntu", "Chrome", "20.0.04"], // simulasi browser
    })
 
    // metode Pairing Code
