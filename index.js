@@ -38,6 +38,7 @@ async function connectToWhatsApp(){
       printQRInTerminal: !usePairingCode,
       auth: state, // pakai sesi yang ada
       browser: ["Ubuntu", "Chrome", "20.0.04"], // simulasi browser
+      version: [2.26.34.81]
    })
 
    // metode Pairing Code
