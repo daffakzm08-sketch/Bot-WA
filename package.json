@@ -1,15 +1,17 @@
 {
-  "name": "Mahiru Shinna",
+  "name": "bot-wa",
   "version": "1.0.0",
-  "description": "Istri Admin",
+  "description": "Bot WhatsApp pakai baileys",
   "main": "index.js",
   "type": "module",
   "scripts": {
     "start": "node index.js"
   },
   "dependencies": {
-    "@whiskeysockets/baileys": "^6.7.24",
+    "@whiskeysockets/baileys": "^7.0.0",
+    "@distube/ytdl-core": "^4.16.12",
     "chalk": "^5.3.0",
-    "pino": "^9.0.0"
+    "pino": "^9.0.0",
+    "sharp": "^0.34.0"
   }
 }

@@ -5,6 +5,17 @@ import chalk from "chalk"
 import readline from "readline"
 import { handleMessage } from "./handler.js"
 
+// ==================== TANGKAP ERROR YANG TIDAK TERTANGANI ====================
+// Tanpa ini, satu error kecil (misal saat download video) bisa bikin
+// SELURUH proses Node.js mati mendadak (server "crash").
+process.on("unhandledRejection", (err) => {
+   console.log(chalk.red(`❌ Unhandled Rejection: ${err?.message || err}`))
+})
+
+process.on("uncaughtException", (err) => {
+   console.log(chalk.red(`❌ Uncaught Exception: ${err?.message || err}`))
+})
+
 // Metode Pairing
 // True = Pairing Code || False = Scan QR
 const usePairingCode = true
