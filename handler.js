@@ -1,8 +1,10 @@
 import chalk from "chalk"
+import fs from "fs"
 import { downloadContentFromMessage } from "@whiskeysockets/baileys"
 import sharp from "sharp"
-import ytdl from "@distube/ytdl-core"
-import { isRegistered, getUser, registerUser, isAntilinkEnabled, setAntilink } from "./db.js"
+import ytdl from "ytdl-core"
+import { isRegistered, getUser, registerUser, isAntilinkEnabled, setAntilink, getProfile, updateProfile, useEnergy } from "./db.js"
+import { SOCIALKIT_API_KEY, GOOGLE_API_KEY, GOOGLE_CX } from "./config.js"
 
 // ==================== PREFIX ====================
 // Semua command harus diawali karakter ini, misal: .ping
@@ -24,7 +26,15 @@ async function isSenderAdmin(sock, jid, sender) {
    }
 }
 
-// ==================== BANTUAN DOWNLOAD MEDIA ====================
+// Ambil video ID dari berbagai format link YouTube (youtu.be, youtube.com/watch, /shorts, dll)
+function extractYoutubeId(url) {
+   const match = url.match(
+      /(?:youtu\.be\/|youtube\.com\/(?:watch\?v=|shorts\/|embed\/))([a-zA-Z0-9_-]{11})/
+   )
+   return match ? match[1] : null
+}
+
+
 // Mengubah stream media (gambar/video/dll dari WA) jadi Buffer utuh
 async function streamToBuffer(stream) {
    const chunks = []
@@ -34,6 +44,41 @@ async function streamToBuffer(stream) {
    return Buffer.concat(chunks)
 }
 
+
+// ==================== STATE GIVEAWAY (di memori, per grup) ====================
+// Disimpan di memori aja (bukan file), jadi kalau bot restart giveaway yang
+// sedang berjalan otomatis hilang & perlu dimulai ulang dengan .ga.
+// Struktur: { [jid]: { jumlahPemenang, messageId, participants: { [senderJid]: {id, nama} } } }
+const activeGiveaways = {}
+
+// Acak urutan array (Fisher-Yates), dipakai buat undi pemenang
+function acakArray(arr) {
+   const hasil = [...arr]
+   for (let i = hasil.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1))
+      ;[hasil[i], hasil[j]] = [hasil[j], hasil[i]]
+   }
+   return hasil
+}
+
+// Coba potong energy sebelum menjalankan fitur berbayar (.tt, .yt, .sticker, dll).
+// Kalau energy tidak cukup, otomatis kirim pesan penolakan dan return false.
+async function spendEnergy(sock, msg, jid, sender, jumlah, namaFitur) {
+   const hasil = useEnergy(sender, jumlah)
+   if (!hasil.success) {
+      await sock.sendMessage(
+         jid,
+         {
+            text:
+               `🔋 Energy kamu tidak cukup buat pakai ${namaFitur} (butuh ${jumlah}, sisa ${hasil.energy}).\n` +
+               `Energy reset otomatis tiap jam 00:00 WIB.`,
+         },
+         { quoted: msg }
+      )
+      return false
+   }
+   return true
+}
 
 // Tambahkan command baru di sini.
 // level: "member" -> bisa dipakai siapa saja
@@ -166,6 +211,106 @@ const commands = {
       },
    },
 
+   profil: {
+      level: "member",
+      desc: "Lihat profil sendiri (ID, nama, energy)",
+      usage: ".profil",
+      run: async (sock, msg, args, jid, sender) => {
+         const user = getProfile(sender)
+         if (!user) {
+            await sock.sendMessage(jid, { text: `⚠️ Kamu belum registrasi. Ketik ${prefix}reg dulu.` }, { quoted: msg })
+            return
+         }
+
+         await sock.sendMessage(
+            jid,
+            {
+               text:
+                  `👤 *Profil Kamu*\n\n` +
+                  `ID: ${user.id}\n` +
+                  `Nama: ${user.nama}\n` +
+                  `🔋 Energy: ${user.energy}/30\n\n` +
+                  `Energy reset otomatis tiap jam 00:00 WIB.`,
+            },
+            { quoted: msg }
+         )
+      },
+   },
+
+   updateprofil: {
+      level: "member",
+      desc: "Update ID & nama profil kamu (energy tidak berubah)",
+      usage: ".updateprofil <ID> <nama> — contoh: .updateprofil 5678 Budi Santoso Baru",
+      run: async (sock, msg, args, jid, sender) => {
+         const id = args[0]
+         const nama = args.slice(1).join(" ")
+
+         if (!id || !nama) {
+            await sock.sendMessage(
+               jid,
+               { text: `⚠️ Format salah. Contoh: ${prefix}updateprofil 5678 Budi Santoso Baru` },
+               { quoted: msg }
+            )
+            return
+         }
+
+         const updated = updateProfile(sender, id, nama)
+         if (!updated) {
+            await sock.sendMessage(jid, { text: `⚠️ Kamu belum registrasi. Ketik ${prefix}reg dulu.` }, { quoted: msg })
+            return
+         }
+
+         await sock.sendMessage(
+            jid,
+            { text: `✅ Profil berhasil diupdate!\nID: ${id}\nNama: ${nama}` },
+            { quoted: msg }
+         )
+      },
+   },
+
+   cekprofil: {
+      level: "admin",
+      desc: "Cek profil orang lain (ID, nama, energy) dengan tag atau reply pesannya",
+      usage: "Tag/mention atau reply pesan orangnya, lalu ketik .cekprofil",
+      run: async (sock, msg, args, jid) => {
+         const target =
+            msg.message?.extendedTextMessage?.contextInfo?.mentionedJid?.[0] ||
+            msg.message?.extendedTextMessage?.contextInfo?.participant
+
+         if (!target) {
+            await sock.sendMessage(
+               jid,
+               { text: "⚠️ Tag/mention orangnya atau reply pesan orang itu, lalu ketik .cekprofil" },
+               { quoted: msg }
+            )
+            return
+         }
+
+         const user = getProfile(target)
+         if (!user) {
+            await sock.sendMessage(
+               jid,
+               { text: `⚠️ Orang itu belum registrasi (@${target.split("@")[0]}).`, mentions: [target] },
+               { quoted: msg }
+            )
+            return
+         }
+
+         await sock.sendMessage(
+            jid,
+            {
+               text:
+                  `👤 *Profil @${target.split("@")[0]}*\n\n` +
+                  `ID: ${user.id}\n` +
+                  `Nama: ${user.nama}\n` +
+                  `🔋 Energy: ${user.energy}/30`,
+               mentions: [target],
+            },
+            { quoted: msg }
+         )
+      },
+   },
+
    info: {
       level: "member",
       desc: "Info singkat tentang bot ini",
@@ -182,9 +327,9 @@ const commands = {
    // Download video TikTok tanpa watermark
    tt: {
       level: "member",
-      desc: "Download video TikTok tanpa watermark",
+      desc: "Download video TikTok tanpa watermark (7 energy)",
       usage: ".tt <link tiktok>",
-      run: async (sock, msg, args, jid) => {
+      run: async (sock, msg, args, jid, sender) => {
          const url = args[0]
 
          if (!url || !url.includes("tiktok.com")) {
@@ -195,6 +340,8 @@ const commands = {
             )
             return
          }
+
+         if (!(await spendEnergy(sock, msg, jid, sender, 7, ".tt"))) return
 
          await sock.sendMessage(jid, { text: "⏳ Sedang download video..." }, { quoted: msg })
 
@@ -234,9 +381,9 @@ const commands = {
    // Download audio/musik dari video TikTok (mp3)
    ttmp3: {
       level: "member",
-      desc: "Download audio/musik dari video TikTok (mp3)",
+      desc: "Download audio/musik dari video TikTok (mp3) (5 energy)",
       usage: ".ttmp3 <link tiktok>",
-      run: async (sock, msg, args, jid) => {
+      run: async (sock, msg, args, jid, sender) => {
          const url = args[0]
 
          if (!url || !url.includes("tiktok.com")) {
@@ -247,6 +394,8 @@ const commands = {
             )
             return
          }
+
+         if (!(await spendEnergy(sock, msg, jid, sender, 5, ".ttmp3"))) return
 
          await sock.sendMessage(jid, { text: "⏳ Sedang download audio..." }, { quoted: msg })
 
@@ -286,12 +435,13 @@ const commands = {
    // Download video YouTube
    yt: {
       level: "member",
-      desc: "Download video YouTube (kualitas gabungan video+audio, biasanya 360p)",
+      desc: "Download video YouTube (coba gratis dulu via ytdl-core, fallback ke SocialKit) (10 energy)",
       usage: ".yt <link youtube>",
-      run: async (sock, msg, args, jid) => {
+      run: async (sock, msg, args, jid, sender) => {
          const url = args[0]
+         const videoId = url ? extractYoutubeId(url) : null
 
-         if (!url || !ytdl.validateURL(url)) {
+         if (!videoId) {
             await sock.sendMessage(
                jid,
                { text: "⚠️ Kirim link YouTube-nya. Contoh:\n.yt https://youtu.be/xxxxx" },
@@ -300,19 +450,56 @@ const commands = {
             return
          }
 
+         if (!(await spendEnergy(sock, msg, jid, sender, 10, ".yt"))) return
+
          await sock.sendMessage(jid, { text: "⏳ Sedang download video..." }, { quoted: msg })
 
+         // ---- Percobaan 1: ytdl-core (gratis, tanpa kuota, tapi rawan gagal) ----
          try {
-            const info = await ytdl.getInfo(url)
-            const judul = info.videoDetails.title
+            const fullUrl = `https://youtu.be/${videoId}`
+            const info = await ytdl.getInfo(fullUrl)
+            const format = ytdl.chooseFormat(info.formats, { filter: "audioandvideo", quality: "lowest" })
 
-            // Ambil format yang sudah gabungan video+audio (biar tidak perlu ffmpeg buat merge)
-            const format = ytdl.chooseFormat(info.formats, { quality: "18" }) // itag 18 = mp4 360p video+audio
-
-            if (!format?.url) {
+            if (format?.url) {
                await sock.sendMessage(
                   jid,
-                  { text: "❌ Format video gabungan tidak ditemukan untuk video ini." },
+                  { video: { url: format.url }, caption: info.videoDetails.title },
+                  { quoted: msg }
+               )
+               return // berhasil, tidak perlu lanjut ke SocialKit
+            }
+         } catch (err) {
+            console.log(chalk.yellow(`⚠️ ytdl-core gagal (yt), fallback ke SocialKit: ${err.message}`))
+         }
+
+         // ---- Percobaan 2: fallback ke SocialKit ----
+         if (SOCIALKIT_API_KEY.startsWith("ISI_")) {
+            await sock.sendMessage(
+               jid,
+               { text: "❌ Gagal download video (ytdl-core error, dan SocialKit belum dikonfigurasi)." },
+               { quoted: msg }
+            )
+            return
+         }
+
+         try {
+            const res = await fetch("https://api.socialkit.dev/youtube/download", {
+               method: "POST",
+               headers: { "Content-Type": "application/json" },
+               body: JSON.stringify({
+                  access_key: SOCIALKIT_API_KEY,
+                  url: `https://youtu.be/${videoId}`,
+                  format: "mp4",
+                  quality: "360p",
+               }),
+            })
+            const json = await res.json()
+
+            if (!json.success || !json.data?.downloadUrl) {
+               console.log(chalk.red(`❌ SocialKit error (yt): ${json.error || JSON.stringify(json)}`))
+               await sock.sendMessage(
+                  jid,
+                  { text: "❌ Gagal download video. Cek lagi link-nya, atau kuota API sudah habis." },
                   { quoted: msg }
                )
                return
@@ -320,7 +507,7 @@ const commands = {
 
             await sock.sendMessage(
                jid,
-               { video: { url: format.url }, caption: judul },
+               { video: { url: json.data.downloadUrl }, caption: json.data.title || "Video YouTube" },
                { quoted: msg }
             )
          } catch (err) {
@@ -337,12 +524,13 @@ const commands = {
    // Download audio dari YouTube
    ytmp3: {
       level: "member",
-      desc: "Download audio dari video YouTube",
+      desc: "Download audio dari video YouTube (coba gratis dulu via ytdl-core, fallback ke SocialKit) (8 energy)",
       usage: ".ytmp3 <link youtube>",
-      run: async (sock, msg, args, jid) => {
+      run: async (sock, msg, args, jid, sender) => {
          const url = args[0]
+         const videoId = url ? extractYoutubeId(url) : null
 
-         if (!url || !ytdl.validateURL(url)) {
+         if (!videoId) {
             await sock.sendMessage(
                jid,
                { text: "⚠️ Kirim link YouTube-nya. Contoh:\n.ytmp3 https://youtu.be/xxxxx" },
@@ -351,23 +539,68 @@ const commands = {
             return
          }
 
+         if (!(await spendEnergy(sock, msg, jid, sender, 8, ".ytmp3"))) return
+
          await sock.sendMessage(jid, { text: "⏳ Sedang ambil audio..." }, { quoted: msg })
 
+         // ---- Percobaan 1: ytdl-core (gratis, tanpa kuota, tapi rawan gagal) ----
          try {
-            const info = await ytdl.getInfo(url)
-            const judul = info.videoDetails.title
-
-            // Ambil format audio-only dengan bitrate terbaik
+            const fullUrl = `https://youtu.be/${videoId}`
+            const info = await ytdl.getInfo(fullUrl)
             const format = ytdl.chooseFormat(info.formats, { filter: "audioonly", quality: "highestaudio" })
 
-            if (!format?.url) {
-               await sock.sendMessage(jid, { text: "❌ Gagal ambil audio dari video ini." }, { quoted: msg })
+            if (format?.url) {
+               await sock.sendMessage(
+                  jid,
+                  {
+                     audio: { url: format.url },
+                     mimetype: "audio/mp4",
+                     fileName: `${info.videoDetails.title}.m4a`,
+                  },
+                  { quoted: msg }
+               )
+               return // berhasil, tidak perlu lanjut ke SocialKit
+            }
+         } catch (err) {
+            console.log(chalk.yellow(`⚠️ ytdl-core gagal (ytmp3), fallback ke SocialKit: ${err.message}`))
+         }
+
+         // ---- Percobaan 2: fallback ke SocialKit ----
+         if (SOCIALKIT_API_KEY.startsWith("ISI_")) {
+            await sock.sendMessage(
+               jid,
+               { text: "❌ Gagal ambil audio (ytdl-core error, dan SocialKit belum dikonfigurasi)." },
+               { quoted: msg }
+            )
+            return
+         }
+
+         try {
+            const res = await fetch("https://api.socialkit.dev/youtube/download", {
+               method: "POST",
+               headers: { "Content-Type": "application/json" },
+               body: JSON.stringify({
+                  access_key: SOCIALKIT_API_KEY,
+                  url: `https://youtu.be/${videoId}`,
+                  format: "mp3",
+               }),
+            })
+            const json = await res.json()
+
+            if (!json.success || !json.data?.downloadUrl) {
+               console.log(chalk.red(`❌ SocialKit error (ytmp3): ${json.error || JSON.stringify(json)}`))
+               await sock.sendMessage(
+                  jid,
+                  { text: "❌ Gagal ambil audio. Cek lagi link-nya, atau kuota API sudah habis." },
+                  { quoted: msg }
+               )
                return
             }
 
+            const judul = json.data.title || "Audio YouTube"
             await sock.sendMessage(
                jid,
-               { audio: { url: format.url }, mimetype: "audio/mp4", fileName: `${judul}.m4a` },
+               { audio: { url: json.data.downloadUrl }, mimetype: "audio/mpeg", fileName: `${judul}.mp3` },
                { quoted: msg }
             )
          } catch (err) {
@@ -387,9 +620,9 @@ const commands = {
    // 2. Reply/quote gambar yang sudah ada di chat, lalu ketik ".sticker"
    sticker: {
       level: "member",
-      desc: "Ubah gambar jadi stiker WA (kirim gambar dengan caption .sticker, atau reply gambar lalu ketik .sticker)",
+      desc: "Ubah gambar jadi stiker WA (kirim gambar dengan caption .sticker, atau reply gambar lalu ketik .sticker) (2 energy)",
       usage: ".sticker (kirim/reply gambar)",
-      run: async (sock, msg, args, jid) => {
+      run: async (sock, msg, args, jid, sender) => {
          // Cari gambar: dari pesan ini langsung, atau dari pesan yang di-reply/quote
          const imageMsg =
             msg.message?.imageMessage ||
@@ -406,6 +639,8 @@ const commands = {
             )
             return
          }
+
+         if (!(await spendEnergy(sock, msg, jid, sender, 2, ".sticker"))) return
 
          await sock.sendMessage(jid, { text: "⏳ Sedang buat stiker..." }, { quoted: msg })
 
@@ -431,6 +666,71 @@ const commands = {
                { text: "❌ Terjadi error saat buat stiker. Coba lagi nanti." },
                { quoted: msg }
             )
+         }
+      },
+   },
+
+   // Pencarian Google
+   src: {
+      level: "member",
+      desc: "Cari sesuatu di Google, tampilkan 5 hasil teratas",
+      usage: ".src <kata kunci>",
+      run: async (sock, msg, args, jid) => {
+         const query = args.join(" ")
+
+         if (!query) {
+            await sock.sendMessage(
+               jid,
+               { text: `⚠️ Kirim kata kuncinya. Contoh:\n${prefix}src cara membuat kopi susu` },
+               { quoted: msg }
+            )
+            return
+         }
+
+         if (GOOGLE_API_KEY.startsWith("ISI_") || GOOGLE_CX.startsWith("ISI_")) {
+            await sock.sendMessage(
+               jid,
+               { text: "⚠️ Fitur pencarian belum dikonfigurasi. Isi GOOGLE_API_KEY dan GOOGLE_CX di file config.js dulu." },
+               { quoted: msg }
+            )
+            return
+         }
+
+         await sock.sendMessage(jid, { text: "🔍 Sedang mencari..." }, { quoted: msg })
+
+         try {
+            const apiUrl = `https://www.googleapis.com/customsearch/v1?key=${GOOGLE_API_KEY}&cx=${GOOGLE_CX}&q=${encodeURIComponent(query)}`
+            const res = await fetch(apiUrl)
+            const json = await res.json()
+
+            if (json.error) {
+               console.log(chalk.red(`❌ Google API error: ${json.error.message}`))
+               await sock.sendMessage(
+                  jid,
+                  { text: "❌ Gagal mencari. Kemungkinan API key/CX salah atau kuota harian habis (limit gratis: 100/hari)." },
+                  { quoted: msg }
+               )
+               return
+            }
+
+            const items = json.items?.slice(0, 5)
+            if (!items || items.length === 0) {
+               await sock.sendMessage(jid, { text: `❌ Tidak ada hasil untuk "${query}".` }, { quoted: msg })
+               return
+            }
+
+            const teks = items
+               .map((item, i) => `${i + 1}. *${item.title}*\n${item.link}\n${item.snippet || ""}`)
+               .join("\n\n")
+
+            await sock.sendMessage(
+               jid,
+               { text: `🔍 *Hasil pencarian "${query}":*\n\n${teks}` },
+               { quoted: msg }
+            )
+         } catch (err) {
+            console.log(chalk.red(`❌ Error command src: ${err.message}`))
+            await sock.sendMessage(jid, { text: "❌ Terjadi error saat mencari. Coba lagi nanti." }, { quoted: msg })
          }
       },
    },
@@ -532,6 +832,134 @@ const commands = {
             },
             { quoted: msg }
          )
+      },
+   },
+
+   ga: {
+      level: "admin",
+      desc: "Mulai giveaway, admin tentukan jumlah pemenang",
+      usage: ".ga <jumlah pemenang> — contoh: .ga 4",
+      run: async (sock, msg, args, jid) => {
+         if (!jid.endsWith("@g.us")) {
+            await sock.sendMessage(jid, { text: "⚠️ Command ini cuma bisa dipakai di grup." }, { quoted: msg })
+            return
+         }
+
+         const jumlah = parseInt(args[0])
+         if (!jumlah || jumlah < 1) {
+            await sock.sendMessage(
+               jid,
+               { text: `⚠️ Format salah. Contoh: ${prefix}ga 4` },
+               { quoted: msg }
+            )
+            return
+         }
+
+         if (activeGiveaways[jid]) {
+            await sock.sendMessage(
+               jid,
+               { text: `⚠️ Sudah ada giveaway yang sedang berjalan di grup ini. Akhiri dulu pakai ${prefix}gastart.` },
+               { quoted: msg }
+            )
+            return
+         }
+
+         const sent = await sock.sendMessage(jid, {
+            text:
+               `🎉 *GIVEAWAY DIMULAI!*\n\n` +
+               `Admin akan memilih *${jumlah} orang* sebagai pemenang.\n\n` +
+               `Mau ikutan? *Reply pesan ini* dengan ${prefix}ikut\n\n` +
+               `Peserta saat ini: belum ada`,
+         })
+
+         activeGiveaways[jid] = {
+            jumlahPemenang: jumlah,
+            messageId: sent.key.id,
+            participants: {},
+         }
+      },
+   },
+
+   ikut: {
+      level: "member",
+      desc: "Ikut giveaway yang sedang berjalan (reply pesan giveaway-nya)",
+      usage: "Reply pesan giveaway yang aktif, lalu ketik .ikut",
+      run: async (sock, msg, args, jid, sender) => {
+         const giveaway = activeGiveaways[jid]
+         const quotedId = msg.message?.extendedTextMessage?.contextInfo?.stanzaId
+
+         if (!giveaway || quotedId !== giveaway.messageId) {
+            await sock.sendMessage(
+               jid,
+               { text: "❌ Tidak ada giveaway aktif untuk pesan itu. Reply pesan giveaway yang sedang berjalan." },
+               { quoted: msg }
+            )
+            return
+         }
+
+         if (giveaway.participants[sender]) {
+            await sock.sendMessage(jid, { text: "ℹ️ Kamu sudah ikut giveaway ini." }, { quoted: msg })
+            return
+         }
+
+         const user = getProfile(sender)
+         if (!user) {
+            await sock.sendMessage(jid, { text: `⚠️ Kamu belum registrasi. Ketik ${prefix}reg dulu.` }, { quoted: msg })
+            return
+         }
+
+         giveaway.participants[sender] = { id: user.id, nama: user.nama }
+
+         const daftarPeserta = Object.values(giveaway.participants)
+            .map((p, i) => `${i + 1}. ID: ${p.id} - Nama: ${p.nama}`)
+            .join("\n")
+
+         await sock.sendMessage(jid, {
+            text:
+               `📋 *Update Peserta Giveaway*\n` +
+               `Pemenang yang akan dipilih: ${giveaway.jumlahPemenang} orang\n\n` +
+               `Peserta (${Object.keys(giveaway.participants).length}):\n${daftarPeserta}`,
+         })
+      },
+   },
+
+   gastart: {
+      level: "admin",
+      desc: "Tutup pendaftaran giveaway & undi pemenang secara acak",
+      usage: ".gastart",
+      run: async (sock, msg, args, jid) => {
+         const giveaway = activeGiveaways[jid]
+         if (!giveaway) {
+            await sock.sendMessage(jid, { text: "⚠️ Tidak ada giveaway aktif di grup ini." }, { quoted: msg })
+            return
+         }
+
+         const pesertaEntries = Object.entries(giveaway.participants) // [senderJid, {id, nama}][]
+
+         if (pesertaEntries.length === 0) {
+            await sock.sendMessage(jid, { text: "⚠️ Tidak ada peserta yang ikut, giveaway dibatalkan." }, { quoted: msg })
+            delete activeGiveaways[jid]
+            return
+         }
+
+         const teracak = acakArray(pesertaEntries)
+         const pemenang = teracak.slice(0, giveaway.jumlahPemenang)
+
+         const daftarPemenang = pemenang
+            .map(([senderJid, p], i) => `${i + 1}. ID: ${p.id} - Nama: ${p.nama} (@${senderJid.split("@")[0]})`)
+            .join("\n")
+
+         const catatanKurang =
+            pesertaEntries.length < giveaway.jumlahPemenang
+               ? `\n\n⚠️ Peserta cuma ${pesertaEntries.length} orang (kurang dari target ${giveaway.jumlahPemenang}), jadi semua peserta otomatis menang.`
+               : ""
+
+         await sock.sendMessage(jid, {
+            text: `🏆 *PEMENANG GIVEAWAY!*\n\n${daftarPemenang}${catatanKurang}\n\nSelamat! 🎉`,
+            mentions: pemenang.map(([senderJid]) => senderJid),
+         })
+
+         delete activeGiveaways[jid]
       },
    },
 }
@@ -649,5 +1077,29 @@ export async function handleMessage(sock, msg) {
    } catch (err) {
       console.log(chalk.red(`❌ Error di command ${cmd}: ${err.message}`))
       await sock.sendMessage(jid, { text: "⚠️ Terjadi error saat menjalankan command." }, { quoted: msg })
+   }
+}
+
+// ==================== WELCOME MESSAGE ====================
+// Dipanggil dari index.js setiap ada perubahan anggota grup (masuk/keluar).
+// Cuma kirim pesan sambutan waktu ada yang BARU MASUK ("add").
+export async function handleGroupParticipantsUpdate(sock, update) {
+   try {
+      if (update.action !== "add") return
+
+      const groupMetadata = await sock.groupMetadata(update.id)
+      const namaGrup = groupMetadata.subject
+
+      for (const participant of update.participants) {
+         await sock.sendMessage(update.id, {
+            text:
+               `👋 Selamat datang @${participant.split("@")[0]} di grup *${namaGrup}*!\n\n` +
+               `Yuk kenalan dulu, ketik ${prefix}reg <ID> <nama> buat registrasi.\n` +
+               `Ketik ${prefix}menu buat lihat semua command yang tersedia.`,
+            mentions: [participant],
+         })
+      }
+   } catch (err) {
+      console.log(chalk.red(`❌ Error welcome message: ${err.message}`))
    }
 }
